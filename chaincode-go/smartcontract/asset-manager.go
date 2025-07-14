@@ -22,6 +22,13 @@ type Asset struct {
 	REMARKS		string	`json:"REMARKS"`
 }
 
+type HistoryQueryResult struct{
+	Record 		*Asset	`json:"record"`
+	TxID 		string	`json:"txId"`
+	Timestamp	string	`json:"timestamp"`
+	IsDelete	bool	`json:"isDelete"`
+}
+
 func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface) error {
 	assets := []Asset{{
 		DealerID:    "DLR001",
@@ -160,3 +167,116 @@ func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface,
 
 	return ctx.GetStub().PutState(dealerID,assetJson)
 }
+
+
+func (s *SmartContract) DeleteAsset(ctx contractapi.TransactionContextInterface, dealerID string) (error) {
+	exists, err := s.Exists(ctx,dealerID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("The Dealer ID Doesnt Exist %s\n", dealerID)
+	}
+
+	return ctx.GetStub().DelState(dealerID)
+}
+
+
+func (s *SmartContract) ReadAsset(ctx contractapi.TransactionContextInterface , dealerID string) (*Asset,error) {
+	assetJson, err := ctx.GetStub().GetState(dealerID)
+	if err != nil {
+		return nil,err
+	}
+	if assetJson == nil {
+		return nil,fmt.Errorf("The Dealer ID Doesnt Exist %s\n", dealerID) 
+	}
+
+	var asset Asset
+
+	err = json.Unmarshal(assetJson,&asset)
+	if err != nil {
+		return nil, err
+	}
+
+	return &asset,nil
+}
+
+
+func (s *SmartContract) GetAssetHistory(ctx contractapi.TransactionContextInterface, dealerID string) ([]HistoryQueryResult,error){
+	exists, err := s.Exists(ctx,dealerID)
+	if err != nil {
+        return nil, fmt.Errorf("failed to check if asset exists: %v", err)
+    }
+    if !exists {
+        return nil, fmt.Errorf("asset with dealerID %s does not exist", dealerID)
+    }
+
+	historyIterator, err := ctx.GetStub().GetHistoryForKey(dealerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get history for dealerID %s: %v", dealerID, err)
+	}
+	defer historyIterator.Close()
+
+	var results []HistoryQueryResult
+
+	for historyIterator.HasNext(){
+		historyData, err := historyIterator.Next()
+		if err != nil{ 
+			return nil, fmt.Errorf("failed to get next history item: %v", err)
+		}
+
+		var asset Asset
+		var record *Asset
+
+		if !historyData.IsDelete {
+			err := json.Unmarshal(historyData.Value , &asset)
+			if err != nil{
+				return nil, fmt.Errorf("failed to unmarshal the data: %v", err)
+			}
+			record = &asset
+		}
+
+		timestamp := historyData.Timestamp.AsTime().Format("2006-01-02 15:04:05")
+
+		historyRecord := HistoryQueryResult{
+			Record: record,
+			TxID: historyData.TxId,
+			Timestamp: timestamp,
+			IsDelete: historyData.IsDelete,
+		}
+
+		results = append(results, historyRecord)
+	}
+
+	return results ,nil
+}	
+
+
+func (s * SmartContract) GetAllAssets(ctx contractapi.TransactionContextInterface) ([]*Asset, error){
+
+	resultsIterator, err := ctx.GetStub().GetStateByRange("","")
+	if err != nil {
+        return nil, fmt.Errorf("failed to get all assets: %v", err)
+    }
+    defer resultsIterator.Close()
+
+	var assets []*Asset
+	
+	for resultsIterator.HasNext(){
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get all assets: %v", err)
+		}
+
+		var asset Asset
+		err = json.Unmarshal(queryResponse.Value, &asset)
+		if err != nil{
+			return nil, fmt.Errorf("failed to unmarshal assets: %v", err)
+		}
+		assets = append(assets, &asset)
+
+	}
+	return assets, nil
+}
+
+
