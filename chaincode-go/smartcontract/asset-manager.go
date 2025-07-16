@@ -3,6 +3,7 @@ package assetManagement
 import (
 	"encoding/json"
 	"fmt"
+	"crypto/sha256"
 
 	"github.com/hyperledger/fabric-contract-api-go/v2/contractapi"
 )
@@ -14,7 +15,7 @@ type SmartContract struct {
 type Asset struct {
 	DealerID 	string	`json:"DEALERID"`
 	MSISDN 		string 	`json:"MSISDN"`
-	MPIN 		int		`json:"MPIN"`
+	MPIN 		string	`json:"MPIN"`
 	BALANCE		float64	`json:"BALANCE"`
 	STATUS		string	`json:"STATUS"`
 	TRANSAMOUNT	float64	`json:"TRANSAMOUNT"`
@@ -33,7 +34,7 @@ func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface)
 	assets := []Asset{{
 		DealerID:    "DLR001",
 		MSISDN:      "919876543210",
-		MPIN:        4321,
+		MPIN:        hashPassword("4321"),
 		BALANCE:     10000.00,
 		STATUS:      "ACTIVE",
 		TRANSAMOUNT: 0,
@@ -43,7 +44,7 @@ func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface)
 	{
 		DealerID:    "DLR002",
 		MSISDN:      "918123456789",
-		MPIN:        1234,
+		MPIN:        hashPassword("1234"),
 		BALANCE:     5000.25,
 		STATUS:      "ACTIVE",
 		TRANSAMOUNT: 1000.00,
@@ -53,7 +54,7 @@ func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface)
 	{
 		DealerID:    "DLR003",
 		MSISDN:      "919912345678",
-		MPIN:        9876,
+		MPIN:        hashPassword("9834"),
 		BALANCE:     200.50,
 		STATUS:      "SUSPENDED",
 		TRANSAMOUNT: 150.00,
@@ -63,7 +64,7 @@ func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface)
 	{
 		DealerID:    "DLR004",
 		MSISDN:      "917012345678",
-		MPIN:        2468,
+		MPIN:        hashPassword("2468"),
 		BALANCE:     0.00,
 		STATUS:      "BLOCKED",
 		TRANSAMOUNT: 0.00,
@@ -73,7 +74,7 @@ func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface)
 	{
 		DealerID:    "DLR005",
 		MSISDN:      "919876123450",
-		MPIN:        1357,
+		MPIN:        hashPassword("1357"),
 		BALANCE:     7500.75,
 		STATUS:      "ACTIVE",
 		TRANSAMOUNT: 500.75,
@@ -97,7 +98,8 @@ func (s *SmartContract) InitLedger (ctx contractapi.TransactionContextInterface)
 }
 
 
-func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface, dealerID string, msisdn string, mpin int, bal float64, status string, txnAmount float64, txnType string, remarks string) error {
+func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface, dealerID string, msisdn string, mpin string, bal float64, status string, txnAmount float64, txnType string, remarks string) error {
+	if err := s.onlyOrg1(ctx); err != nil { return err }
 	exists, err := s.Exists(ctx, dealerID)
 	if err != nil {
 		return fmt.Errorf("Error : %s\n", err)
@@ -109,7 +111,7 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	asset := Asset{
 		DealerID: dealerID,
 		MSISDN: msisdn,
-		MPIN: mpin,
+		MPIN: hashPassword(mpin),
 		BALANCE: bal,
 		STATUS: status,
 		TRANSAMOUNT: txnAmount,
@@ -138,8 +140,8 @@ func (s *SmartContract) Exists(ctx contractapi.TransactionContextInterface,Deale
 	return assetJSON != nil, err
 }
 
-func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface,dealerID string, msisdn string, mpin int, bal float64, status string, txnAmount float64, txnType string, remarks string) error {
-
+func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface,dealerID string, msisdn string, mpin string, bal float64, status string, txnAmount float64, txnType string, remarks string) error {
+	if err := s.onlyOrg1(ctx); err != nil { return err }
 	exists , err := s.Exists(ctx,dealerID)
 	if err != nil {
 		return err
@@ -152,7 +154,7 @@ func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface,
 	asset := Asset{
 		DealerID: dealerID,
 		MSISDN: msisdn,
-		MPIN: mpin,
+		MPIN: hashPassword(mpin),
 		BALANCE: bal,
 		STATUS: status,
 		TRANSAMOUNT: txnAmount,
@@ -170,6 +172,7 @@ func (s *SmartContract) UpdateAsset(ctx contractapi.TransactionContextInterface,
 
 
 func (s *SmartContract) DeleteAsset(ctx contractapi.TransactionContextInterface, dealerID string) (error) {
+	if err := s.onlyOrg1(ctx); err != nil { return err }
 	exists, err := s.Exists(ctx,dealerID)
 	if err != nil {
 		return err
@@ -197,7 +200,7 @@ func (s *SmartContract) ReadAsset(ctx contractapi.TransactionContextInterface , 
 	if err != nil {
 		return nil, err
 	}
-
+	asset.MPIN = ""
 	return &asset,nil
 }
 
@@ -273,10 +276,54 @@ func (s * SmartContract) GetAllAssets(ctx contractapi.TransactionContextInterfac
 		if err != nil{
 			return nil, fmt.Errorf("failed to unmarshal assets: %v", err)
 		}
+		asset.MPIN = ""
 		assets = append(assets, &asset)
 
 	}
 	return assets, nil
 }
 
+func (s *SmartContract) VerifyMPIN(ctx contractapi.TransactionContextInterface, dealerID string, inputMPIN string) (bool, error) {
+	assetJSON, err := ctx.GetStub().GetState(dealerID)
+	if err != nil {
+		return false, fmt.Errorf("failed to read asset: %v", err)
+	}
+	if assetJSON == nil {
+		return false, fmt.Errorf("asset with dealerID %s not found", dealerID)
+	}
+
+	var asset Asset
+	err = json.Unmarshal(assetJSON, &asset)
+	if err != nil {
+		return false, fmt.Errorf("failed to unmarshal asset: %v", err)
+	}
+
+	if verifyPassword(inputMPIN, asset.MPIN) {
+		return true, nil
+	}
+	return false, nil
+}
+
+
+func hashPassword(password string) string {
+    hash := sha256.Sum256([]byte(password))
+    return fmt.Sprintf("%x", hash)
+}
+
+func verifyPassword(input, stored string) bool {
+    return hashPassword(input) == stored
+}
+
+
+func (s *SmartContract) onlyOrg1(ctx contractapi.TransactionContextInterface) error {
+    mspID, err := ctx.GetClientIdentity().GetMSPID()
+    if err != nil {
+        return fmt.Errorf("failed to get MSP ID: %v", err)
+    }
+
+    if mspID != "Org1MSP" {
+        return fmt.Errorf("unauthorized: only Org1MSP can invoke this function")
+    }
+    return nil
+}
 
